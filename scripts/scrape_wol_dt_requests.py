@@ -22,8 +22,38 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 def jitter_sleep(mult=1.0):
     time.sleep(mult * random.uniform(1.0, 3.0))
+tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 
+def telegram_send_message(text: str, token: str, chat_id: str) -> None:
+    """
+    Sends a message to a Telegram chat.
+    Telegram message limit is ~4096 chars; we auto-split safely.
+    """
+    api = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    # Telegram limit: 4096 characters per message
+    chunks = []
+    while text:
+        chunk = text[:4000]
+        text = text[4000:]
+        chunks.append(chunk)
+
+    for i, chunk in enumerate(chunks):
+        resp = requests.post(
+            api,
+            data={
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            },
+            timeout=(15, 60),
+        )
+        resp.raise_for_status()
+        # small delay between chunks to be safe
+        if i < len(chunks) - 1:
+            time.sleep(0.8)
 
 def format_human_readable(content_html: str) -> str:
     soup = BeautifulSoup(content_html, "html.parser")
@@ -141,6 +171,13 @@ def main():
                     f.write(readable)
             
                 print("Saved human-readable log:", log_path)
+                if tg_token and tg_chat_id:
+                    # optional: prefix a short header
+                    message = f"WOL Daily Text ({stamp})\n\n{readable}"
+                    telegram_send_message(message, tg_token, tg_chat_id)
+                    print("Sent to Telegram.")
+                else:
+                    print("Telegram not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
 
             # Save JSON
             with open(raw_path, "w", encoding="utf-8") as f:
@@ -158,6 +195,7 @@ def main():
             save_cache(cache_path, cache_update)
 
             print("200 OK - saved:", raw_path)
+            
             print("Cache:", cache_update)
             return
 
