@@ -1,0 +1,58 @@
+name: Scrape WOL DT JSON (auto)
+
+on:
+  # Optional manual run (no inputs needed)
+  workflow_dispatch:
+
+  # Auto run every day (Asia/Manila is UTC+8)
+  # This triggers at 00:05 Manila time = 16:05 UTC (previous day)
+  schedule:
+    - cron: "5 16 * * *"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright beautifulsoup4
+          python -m playwright install --with-deps chromium
+
+      - name: Compute date in Asia/Manila
+        id: date
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          d = datetime.now(ZoneInfo("Asia/Manila"))
+          print("YEAR=" + str(d.year))
+          print("MONTH=" + str(d.month))  # no leading zero (matches your URL style)
+          print("DAY=" + str(d.day))
+          PY >> "$GITHUB_OUTPUT"
+
+      - name: Run scrape
+        env:
+          YEAR: ${{ steps.date.outputs.YEAR }}
+          MONTH: ${{ steps.date.outputs.MONTH }}
+          DAY: ${{ steps.date.outputs.DAY }}
+          OUT_DIR: data
+          NAV_TIMEOUT_MS: "90000"
+        run: |
+          python scripts/scrape_wol_dt_capture_json.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wol-dt-${{ steps.date.outputs.YEAR }}-${{ steps.date.outputs.MONTH }}-${{ steps.date.outputs.DAY }}
+          path: data/
