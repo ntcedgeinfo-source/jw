@@ -32,9 +32,6 @@ jobs:
           MONTH: ${{ steps.date.outputs.MONTH }}
           DAY: ${{ steps.date.outputs.DAY }}
           OUT_DIR: data
-          CONNECT_TIMEOUT: "15"
-          READ_TIMEOUT: "120"
-          TRIES: "8"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
