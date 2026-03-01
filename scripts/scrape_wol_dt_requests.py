@@ -8,63 +8,115 @@ import requests
 
 BASE = "https://wol.jw.org/wol/dt/r101/lp-cv/{year}/{month}/{day}"
 
-YEAR = os.getenv("YEAR", "2026")
-MONTH = os.getenv("MONTH", "3")
-DAY = os.getenv("DAY", "1")
+YEAR = int(os.getenv("YEAR", "2026"))
+MONTH = int(os.getenv("MONTH", "3"))
+DAY = int(os.getenv("DAY", "1"))
 
 OUT_DIR = os.getenv("OUT_DIR", "data")
-TIMEOUT = int(os.getenv("TIMEOUT", "45"))
-RETRIES = int(os.getenv("RETRIES", "5"))
+CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "15"))
+READ_TIMEOUT = float(os.getenv("READ_TIMEOUT", "120"))
+TRIES = int(os.getenv("TRIES", "8"))
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
-})
+def jitter_sleep(mult=1.0):
+    time.sleep(mult * random.uniform(1.0, 3.0))
 
-def fetch_json(url):
-    last_err = None
-    for i in range(RETRIES):
-        try:
-            r = session.get(url, timeout=TIMEOUT)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            last_err = e
-            time.sleep((2 ** i) + random.random())
-    raise RuntimeError(f"Failed after {RETRIES} retries: {last_err}")
+def load_cache(cache_path: str) -> dict:
+    if not os.path.exists(cache_path):
+        return {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_cache(cache_path: str, data: dict) -> None:
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 def main():
-    url = BASE.format(year=int(YEAR), month=int(MONTH), day=int(DAY))
-    stamp = f"{int(YEAR):04d}-{int(MONTH):02d}-{int(DAY):02d}"
-    fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = BASE.format(year=YEAR, month=MONTH, day=DAY)
+    stamp = f"{YEAR:04d}-{MONTH:02d}-{DAY:02d}"
 
-    payload = fetch_json(url)
-
-    # Save raw JSON
     raw_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.json")
-    with open(raw_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    cache_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.cache.json")  # stores etag/last-modified
 
-    # Extract first item (Daily Text)
-    daily = payload.get("items", [None])[0]
+    cache = load_cache(cache_path)
+    etag = cache.get("etag")
+    last_modified = cache.get("last_modified")
 
-    parsed = {
-        "date": stamp,
-        "source_url": url,
-        "fetched_at_utc": fetched_at,
-        "daily": daily,
+    headers = {
+        # Mimic the browser XHR you showed
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://wol.jw.org/ceb/wol/h/r101/lp-cv",
     }
 
-    parsed_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.parsed.json")
-    with open(parsed_path, "w", encoding="utf-8") as f:
-        json.dump(parsed, f, ensure_ascii=False, indent=2)
+    # Conditional request -> enables 304 Not Modified
+    if etag:
+        headers["If-None-Match"] = etag
+    if last_modified:
+        headers["If-Modified-Since"] = last_modified
 
-    print("Scraped:", url)
-    print("Saved:", raw_path)
-    print("Saved:", parsed_path)
+    session = requests.Session()
+
+    last_err = None
+    resp = None
+
+    for attempt in range(1, TRIES + 1):
+        try:
+            jitter_sleep(1.0 if attempt == 1 else min(5.0, attempt))
+
+            resp = session.get(url, headers=headers, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
+
+            # 304 => keep existing JSON file (fast path)
+            if resp.status_code == 304:
+                if os.path.exists(raw_path):
+                    print("304 Not Modified - keeping existing file:", raw_path)
+                    return
+                # If no existing file, we must refetch without conditional headers
+                headers.pop("If-None-Match", None)
+                headers.pop("If-Modified-Since", None)
+                continue
+
+            # transient errors / bot edge cases
+            if resp.status_code in (429, 500, 502, 503, 504):
+                last_err = RuntimeError(f"HTTP {resp.status_code}")
+                continue
+
+            resp.raise_for_status()
+
+            payload = resp.json()
+
+            # Save JSON
+            with open(raw_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+
+            # Update cache headers for next run
+            new_etag = resp.headers.get("ETag")
+            new_last_modified = resp.headers.get("Last-Modified")
+            cache_update = {
+                "url": url,
+                "etag": new_etag,
+                "last_modified": new_last_modified,
+                "saved_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            save_cache(cache_path, cache_update)
+
+            print("200 OK - saved:", raw_path)
+            print("Cache:", cache_update)
+            return
+
+        except Exception as e:
+            last_err = e
+
+    raise RuntimeError(f"Failed after {TRIES} tries: {last_err}")
 
 if __name__ == "__main__":
     main()
