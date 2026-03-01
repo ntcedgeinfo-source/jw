@@ -3,7 +3,8 @@ import json
 import time
 import random
 from datetime import datetime, timezone
-
+from bs4 import BeautifulSoup
+import re
 import requests
 
 BASE = "https://wol.jw.org/wol/dt/r101/lp-cv/{year}/{month}/{day}"
@@ -21,6 +22,42 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 def jitter_sleep(mult=1.0):
     time.sleep(mult * random.uniform(1.0, 3.0))
+
+
+
+def format_human_readable(content_html: str) -> str:
+    soup = BeautifulSoup(content_html, "html.parser")
+
+    # Header (date)
+    header = soup.find("h2")
+    header_text = header.get_text(strip=True) if header else ""
+
+    # Theme scripture line
+    theme = soup.find("p", class_="themeScrp")
+    theme_text = theme.get_text(" ", strip=True) if theme else ""
+
+    # Body paragraph
+    body_div = soup.find("div", class_="bodyTxt")
+    body_text = ""
+    if body_div:
+        body_text = body_div.get_text(" ", strip=True)
+
+    # Clean excessive spaces
+    body_text = re.sub(r"\s+", " ", body_text).strip()
+
+    # Format log output
+    output = []
+    output.append("=" * 60)
+    output.append(f"DATE: {header_text}")
+    output.append("-" * 60)
+    output.append("THEME SCRIPTURE:")
+    output.append(theme_text)
+    output.append("")
+    output.append("MESSAGE:")
+    output.append(body_text)
+    output.append("=" * 60)
+
+    return "\n".join(output)
 
 def load_cache(cache_path: str) -> dict:
     if not os.path.exists(cache_path):
@@ -93,6 +130,17 @@ def main():
             resp.raise_for_status()
 
             payload = resp.json()
+
+            daily = (payload.get("items") or [None])[0]
+
+            if daily and daily.get("content"):
+                readable = format_human_readable(daily["content"])
+            
+                log_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.log")
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.write(readable)
+            
+                print("Saved human-readable log:", log_path)
 
             # Save JSON
             with open(raw_path, "w", encoding="utf-8") as f:
