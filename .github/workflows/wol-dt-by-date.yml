@@ -31,15 +31,7 @@ jobs:
       - name: Compute date in Asia/Manila
         id: date
         run: |
-          python - <<'PY'
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
-
-          d = datetime.now(ZoneInfo("Asia/Manila"))
-          print("YEAR=" + str(d.year))
-          print("MONTH=" + str(d.month))  # no leading zero (matches your URL style)
-          print("DAY=" + str(d.day))
-          PY >> "$GITHUB_OUTPUT"
+          python -c "from datetime import datetime; from zoneinfo import ZoneInfo; d=datetime.now(ZoneInfo('Asia/Manila')); print(f'YEAR={d.year}'); print(f'MONTH={d.month}'); print(f'DAY={d.day}')" >> "$GITHUB_OUTPUT"
 
       - name: Run scrape
         env:
