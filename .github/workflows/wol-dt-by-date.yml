@@ -34,7 +34,21 @@ jobs:
           OUT_DIR: data
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEND_EMAIL: "1"
+          BLOGGER_POST_EMAIL: ${{ secrets.BLOGGER_POST_EMAIL }}
+
+          SMTP_HOST: "smtp.gmail.com"
+          SMTP_PORT: "587"
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: |
+          # If inputs are empty (scheduled run), set YEAR/MONTH/DAY to Manila "today"
+          if [ -z "$YEAR" ] || [ -z "$MONTH" ] || [ -z "$DAY" ]; then
+            YEAR=$(TZ=Asia/Manila date +%Y)
+            MONTH=$(TZ=Asia/Manila date +%-m)
+            DAY=$(TZ=Asia/Manila date +%-d)
+            export YEAR MONTH DAY
+          fi
           python scripts/scrape_wol_dt_requests.py
 
       - name: Upload artifact
