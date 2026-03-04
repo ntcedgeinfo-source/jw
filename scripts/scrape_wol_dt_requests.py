@@ -4,9 +4,11 @@ import json
 import time
 import random
 import re
+import smtplib
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from html import unescape
+from email.message import EmailMessage
 
 import requests
 
@@ -33,6 +35,15 @@ TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 SEND_TELEGRAM = os.getenv("SEND_TELEGRAM", "1").strip() == "1"
 
+# Email-to-Blogger (or any email target)
+SEND_EMAIL = os.getenv("SEND_EMAIL", "0").strip() == "1"
+BLOGGER_POST_EMAIL = os.getenv("BLOGGER_POST_EMAIL", "").strip()
+
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
+
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
@@ -41,6 +52,37 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # -----------------------------
 def jitter_sleep(mult=1.0):
     time.sleep(mult * random.uniform(1.0, 3.0))
+
+
+def post_to_blogger(subject: str, html_body: str) -> bool:
+    """
+    Sends an email with HTML body to BLOGGER_POST_EMAIL using SMTP credentials.
+    Works for Blogger "post-by-email" and also any normal email inbox.
+    """
+    to_addr = BLOGGER_POST_EMAIL
+    if not to_addr or not SMTP_USER or not SMTP_PASS:
+        print("Email SMTP not configured (BLOGGER_POST_EMAIL / SMTP_USER / SMTP_PASS).")
+        return False
+
+    try:
+        msg = EmailMessage()
+        msg["From"] = SMTP_USER
+        msg["To"] = to_addr
+        msg["Subject"] = subject
+        msg.set_content("This post requires an HTML-capable email client.")
+        msg.add_alternative(html_body, subtype="html")
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+            s.ehlo()
+            s.starttls()
+            s.ehlo()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+
+        return True
+    except Exception as e:
+        print(f"Email post failed: {e}")
+        return False
 
 
 class TextExtractor(HTMLParser):
@@ -113,6 +155,57 @@ def format_human_readable(content_html: str) -> str:
     )
 
 
+def format_html_post(content_html: str, stamp: str) -> str:
+    """
+    Blogger-friendly HTML email body.
+    Uses extracted header/theme/body and formats them into simple HTML.
+    """
+    # header text
+    m = re.search(r"<h2[^>]*>.*?</h2>", content_html, flags=re.IGNORECASE | re.DOTALL)
+    header_text = html_to_text(m.group(0)) if m else f"WOL Daily Text ({stamp})"
+
+    # theme
+    m = re.search(
+        r'<p[^>]*class="[^"]*\bthemeScrp\b[^"]*"[^>]*>.*?</p>',
+        content_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    theme_text = html_to_text(m.group(0)) if m else ""
+
+    # body
+    m = re.search(
+        r'<div[^>]*class="[^"]*\bbodyTxt\b[^"]*"[^>]*>(.*?)</div>',
+        content_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    body_text = html_to_text(m.group(1)) if m else ""
+    body_text = re.sub(r"\s+", " ", body_text).strip()
+
+    def esc(s: str) -> str:
+        # minimal escaping for email HTML
+        return (
+            s.replace("&", "&amp;")
+             .replace("<", "&lt;")
+             .replace(">", "&gt;")
+        )
+
+    return f"""\
+<!doctype html>
+<html>
+  <body>
+    <h2>{esc(header_text)}</h2>
+    <hr/>
+    <h3>Theme Scripture</h3>
+    <p>{esc(theme_text)}</p>
+    <h3>Message</h3>
+    <p>{esc(body_text)}</p>
+    <hr/>
+    <p style="font-size:12px;color:#666;">Source: wol.jw.org · {esc(stamp)}</p>
+  </body>
+</html>
+"""
+
+
 def load_cache(cache_path: str) -> dict:
     if not os.path.exists(cache_path):
         return {}
@@ -143,7 +236,7 @@ def telegram_send_message(text: str, token: str, chat_id: str) -> None:
         resp = requests.post(
             api,
             data={
-                "chat_id": chat_id,  # numeric id or @channelusername
+                "chat_id": chat_id,
                 "text": part,
                 "disable_web_page_preview": True,
             },
@@ -196,7 +289,6 @@ def main():
     payload = None
     resp_headers = None
 
-    # ---- Only WOL fetch is retried ----
     last_err = None
     for attempt in range(1, WOL_TRIES + 1):
         try:
@@ -211,7 +303,6 @@ def main():
             if resp.status_code == 304:
                 if os.path.exists(raw_path):
                     print("304 Not Modified - keeping existing JSON:", raw_path)
-                    # Still create/update log from existing JSON if possible
                     with open(raw_path, "r", encoding="utf-8") as f:
                         payload = json.load(f)
                     resp_headers = {"ETag": etag, "Last-Modified": last_modified}
@@ -253,26 +344,34 @@ def main():
     save_cache(cache_path, cache_update)
     print("Saved cache:", cache_path)
 
-    # Build human-readable log
+    # Build human-readable log + (optional) email HTML
     daily = (payload.get("items") or [None])[0]
     if daily and daily.get("content"):
         readable = format_human_readable(daily["content"])
+        html_post = format_html_post(daily["content"], stamp)
+
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(readable + "\n")
         print("Saved human-readable log:", log_path)
+
+        if SEND_EMAIL:
+            subject = f"WOL Daily Text ({stamp})"
+            ok = post_to_blogger(subject=subject, html_body=html_post)
+            print("Email sent." if ok else "Email not sent.")
     else:
         readable = f"WOL Daily Text ({stamp})\n\n(No 'content' field found)"
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(readable + "\n")
         print("Saved human-readable log (fallback):", log_path)
 
-    # ---- Telegram send (NO retries on 400) ----
+    # Telegram
     if SEND_TELEGRAM and TG_TOKEN and TG_CHAT_ID:
         msg = f"WOL Daily Text ({stamp})\n\n{readable}"
         telegram_send_message(msg, TG_TOKEN, TG_CHAT_ID)
         print("Sent to Telegram.")
     else:
         print("Telegram not configured (or SEND_TELEGRAM=0).")
+
 
 if __name__ == "__main__":
     main()
