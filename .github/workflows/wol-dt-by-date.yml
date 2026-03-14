@@ -41,6 +41,9 @@ jobs:
           SMTP_PORT: "587"
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           # If inputs are empty (scheduled run), set YEAR/MONTH/DAY to Manila "today"
           if [ -z "$YEAR" ] || [ -z "$MONTH" ] || [ -z "$DAY" ]; then
