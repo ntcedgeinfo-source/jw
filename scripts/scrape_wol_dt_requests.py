@@ -9,9 +9,35 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from html import unescape
 from email.message import EmailMessage
-
+from cloudflare_image import generate_image_cloudflare
 import requests
+def extract_daily_parts(content_html: str) -> dict:
+    # Extract date from <h2>...</h2>
+    m = re.search(r"<h2[^>]*>(.*?)</h2>", content_html, flags=re.IGNORECASE | re.DOTALL)
+    header_text = html_to_text(m.group(0)) if m else ""
 
+    # Extract theme scripture paragraph class="themeScrp"
+    m = re.search(
+        r'<p[^>]*class="[^"]*\bthemeScrp\b[^"]*"[^>]*>.*?</p>',
+        content_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    theme_text = html_to_text(m.group(0)) if m else ""
+
+    # Extract body text inside <div class="bodyTxt">...</div>
+    m = re.search(
+        r'<div[^>]*class="[^"]*\bbodyTxt\b[^"]*"[^>]*>(.*?)</div>',
+        content_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    body_text = html_to_text(m.group(1)) if m else ""
+    body_text = re.sub(r"\s+", " ", body_text).strip()
+
+    return {
+        "header_text": header_text.strip(),
+        "theme_text": theme_text.strip(),
+        "body_text": body_text.strip(),
+    }
 
 # -----------------------------
 # Config
@@ -119,91 +145,52 @@ def html_to_text(html: str) -> str:
 
 
 def format_human_readable(content_html: str) -> str:
-    # Extract date from <h2>...</h2>
-    m = re.search(r"<h2[^>]*>(.*?)</h2>", content_html, flags=re.IGNORECASE | re.DOTALL)
-    header_text = html_to_text(m.group(0)) if m else ""
-
-    # Extract theme scripture paragraph class="themeScrp"
-    m = re.search(
-        r'<p[^>]*class="[^"]*\bthemeScrp\b[^"]*"[^>]*>.*?</p>',
-        content_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    theme_text = html_to_text(m.group(0)) if m else ""
-
-    # Extract body text inside <div class="bodyTxt">...</div>
-    m = re.search(
-        r'<div[^>]*class="[^"]*\bbodyTxt\b[^"]*"[^>]*>(.*?)</div>',
-        content_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    body_text = html_to_text(m.group(1)) if m else ""
-    body_text = re.sub(r"\s+", " ", body_text).strip()
-
+    parts = extract_daily_parts(content_html)
     return "\n".join(
         [
             "=" * 60,
-            f"DATE: {header_text}",
+            f"DATE: {parts['header_text']}",
             "-" * 60,
             "THEME SCRIPTURE:",
-            theme_text,
+            parts["theme_text"],
             "",
             "MESSAGE:",
-            body_text,
+            parts["body_text"],
             "=" * 60,
         ]
     )
 
 
-def format_html_post(content_html: str, stamp: str) -> str:
-    """
-    Blogger-friendly HTML email body.
-    Uses extracted header/theme/body and formats them into simple HTML.
-    """
-    # header text
-    m = re.search(r"<h2[^>]*>.*?</h2>", content_html, flags=re.IGNORECASE | re.DOTALL)
-    header_text = html_to_text(m.group(0)) if m else f"WOL Daily Text ({stamp})"
-
-    # theme
-    m = re.search(
-        r'<p[^>]*class="[^"]*\bthemeScrp\b[^"]*"[^>]*>.*?</p>',
-        content_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    theme_text = html_to_text(m.group(0)) if m else ""
-
-    # body
-    m = re.search(
-        r'<div[^>]*class="[^"]*\bbodyTxt\b[^"]*"[^>]*>(.*?)</div>',
-        content_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    body_text = html_to_text(m.group(1)) if m else ""
-    body_text = re.sub(r"\s+", " ", body_text).strip()
+def format_html_post(content_html: str, stamp: str, image_url: str = "") -> str:
+    parts = extract_daily_parts(content_html)
 
     def esc(s: str) -> str:
-        # minimal escaping for email HTML
         return (
             s.replace("&", "&amp;")
              .replace("<", "&lt;")
              .replace(">", "&gt;")
         )
 
+    image_block = ""
+    if image_url:
+        image_block = f'<p><img src="{esc(image_url)}" alt="Daily Text Image" style="max-width:100%;height:auto;border-radius:8px;"/></p>'
+
     return f"""\
-<!doctype html>
-<html>
-  <body>
-    <h2>{esc(header_text)}</h2>
-    <hr/>
-    <h3>Theme Scripture</h3>
-    <p>{esc(theme_text)}</p>
-    <h3>Message</h3>
-    <p>{esc(body_text)}</p>
-    <hr/>
-    <p style="font-size:12px;color:#666;">Source: wol.jw.org · {esc(stamp)}</p>
-  </body>
-</html>
-"""
+    <!doctype html>
+    <html>
+      <body>
+        <h2>{esc(parts["header_text"] or f"WOL Daily Text ({stamp})")}</h2>
+        {image_block}
+        <hr/>
+        <h3>Theme Scripture</h3>
+        <p>{esc(parts["theme_text"])}</p>
+        <h3>Message</h3>
+        <p>{esc(parts["body_text"])}</p>
+        <hr/>
+        <p style="font-size:12px;color:#666;">Source: wol.jw.org · {esc(stamp)}</p>
+      </body>
+    </html>
+    """
 
 
 def load_cache(cache_path: str) -> dict:
@@ -347,12 +334,43 @@ def main():
     # Build human-readable log + (optional) email HTML
     daily = (payload.get("items") or [None])[0]
     if daily and daily.get("content"):
+        parts = extract_daily_parts(daily["content"])
+        theme_text = parts["theme_text"]
+        header_text = parts["header_text"]
+
         readable = format_human_readable(daily["content"])
-        html_post = format_html_post(daily["content"], stamp)
 
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(readable + "\n")
         print("Saved human-readable log:", log_path)
+
+        # Generate image from theme_text
+        image_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.jpg")
+        image_url = ""
+
+        try:
+            image_prompt = (
+                f"Create a peaceful, uplifting Christian devotional illustration inspired by this theme: "
+                f"'{theme_text}'. Soft light, clean composition, warm colors, respectful, no text in image."
+            )
+
+            generate_image_cloudflare(
+                prompt=image_prompt,
+                output_path=image_path,
+                seed=DAY + MONTH + YEAR,
+                width=1024,
+                height=1024,
+                steps=4,
+            )
+            print("Saved generated image:", image_path)
+
+            # If later you upload image somewhere, assign public URL here
+            # image_url = "https://your-public-image-url.jpg"
+
+        except Exception as e:
+            print(f"Cloudflare image generation failed: {e}")
+
+        html_post = format_html_post(daily["content"], stamp, image_url=image_url)
 
         if SEND_EMAIL:
             subject = f"WOL Daily Text ({stamp})"
