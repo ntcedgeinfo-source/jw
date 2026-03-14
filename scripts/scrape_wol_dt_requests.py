@@ -11,6 +11,35 @@ from html import unescape
 from email.message import EmailMessage
 from cloudflare_image import generate_image_cloudflare
 import requests
+def telegram_send_photo(photo_path: str, caption: str, token: str, chat_id: str) -> None:
+    """
+    Send a photo to Telegram with caption.
+    Raises RuntimeError with Telegram error body on failure.
+    """
+    api = f"https://api.telegram.org/bot{token}/sendPhoto"
+
+    if not os.path.exists(photo_path):
+        raise FileNotFoundError(f"Photo not found: {photo_path}")
+
+    with open(photo_path, "rb") as f:
+        resp = requests.post(
+            api,
+            data={
+                "chat_id": chat_id,
+                "caption": caption[:1024],  # Telegram caption limit
+            },
+            files={
+                "photo": f,
+            },
+            timeout=(15, 120),
+        )
+
+    if resp.status_code >= 400:
+        try:
+            err = resp.json()
+        except Exception:
+            err = {"raw": resp.text}
+        raise RuntimeError(f"Telegram sendPhoto error {resp.status_code}: {err}")
 def extract_daily_parts(content_html: str) -> dict:
     # Extract date from <h2>...</h2>
     m = re.search(r"<h2[^>]*>(.*?)</h2>", content_html, flags=re.IGNORECASE | re.DOTALL)
@@ -407,9 +436,32 @@ def main():
 
     # Telegram
     if SEND_TELEGRAM and TG_TOKEN and TG_CHAT_ID:
-        msg = f"WOL Daily Text ({stamp})\n\n{readable}"
-        telegram_send_message(msg, TG_TOKEN, TG_CHAT_ID)
-        print("Sent to Telegram.")
+        try:
+            if daily and daily.get("content") and os.path.exists(image_path):
+                telegram_caption = f"""WOL Daily Text ({stamp})
+
+                {parts.get("header_text", "")}
+                
+                Theme Scripture:
+                {parts.get("theme_text", "")}
+                
+                Source: wol.jw.org
+                """.strip()
+
+                telegram_send_photo(
+                    photo_path=image_path,
+                    caption=telegram_caption,
+                    token=TG_TOKEN,
+                    chat_id=TG_CHAT_ID,
+                )
+
+                telegram_send_message(readable, TG_TOKEN, TG_CHAT_ID)
+                print("Sent image and text to Telegram.")
+            else:
+                telegram_send_message(f"WOL Daily Text ({stamp})\n\n{readable}", TG_TOKEN, TG_CHAT_ID)
+                print("Sent text to Telegram.")
+        except Exception as e:
+            print(f"Telegram send failed: {e}")
     else:
         print("Telegram not configured (or SEND_TELEGRAM=0).")
 
