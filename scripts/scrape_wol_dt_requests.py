@@ -450,7 +450,7 @@ def main():
 
                 telegram_send_photo(
                     photo_path=image_path,
-                    caption=readable,
+                    caption=telegram_caption,
                     token=TG_TOKEN,
                     chat_id=TG_CHAT_ID,
                 )
