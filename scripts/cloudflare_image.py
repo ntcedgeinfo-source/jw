@@ -3,7 +3,7 @@ import base64
 import requests
 
 
-CLOUDFLARE_IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
+CLOUDFLARE_IMAGE_MODEL = "@cf/leonardo/lucid-origin"
 
 
 def generate_image_cloudflare(
