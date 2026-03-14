@@ -80,10 +80,10 @@ def jitter_sleep(mult=1.0):
     time.sleep(mult * random.uniform(1.0, 3.0))
 
 
-def post_to_blogger(subject: str, html_body: str) -> bool:
+def post_to_blogger(subject: str, html_body: str, attachment_path: str = "") -> bool:
     """
     Sends an email with HTML body to BLOGGER_POST_EMAIL using SMTP credentials.
-    Works for Blogger "post-by-email" and also any normal email inbox.
+    Optionally attaches an image or file.
     """
     to_addr = BLOGGER_POST_EMAIL
     if not to_addr or not SMTP_USER or not SMTP_PASS:
@@ -97,6 +97,29 @@ def post_to_blogger(subject: str, html_body: str) -> bool:
         msg["Subject"] = subject
         msg.set_content("This post requires an HTML-capable email client.")
         msg.add_alternative(html_body, subtype="html")
+
+        if attachment_path and os.path.exists(attachment_path):
+            with open(attachment_path, "rb") as f:
+                file_data = f.read()
+
+            filename = os.path.basename(attachment_path)
+            ext = os.path.splitext(filename)[1].lower()
+
+            if ext in (".jpg", ".jpeg"):
+                maintype, subtype = "image", "jpeg"
+            elif ext == ".png":
+                maintype, subtype = "image", "png"
+            elif ext == ".webp":
+                maintype, subtype = "image", "webp"
+            else:
+                maintype, subtype = "application", "octet-stream"
+
+            msg.add_attachment(
+                file_data,
+                maintype=maintype,
+                subtype=subtype,
+                filename=filename,
+            )
 
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
             s.ehlo()
@@ -374,7 +397,7 @@ def main():
 
         if SEND_EMAIL:
             subject = f"WOL Daily Text ({stamp})"
-            ok = post_to_blogger(subject=subject, html_body=html_post)
+            ok = post_to_blogger(subject=subject,html_body=html_post,attachment_path=image_path)
             print("Email sent." if ok else "Email not sent.")
     else:
         readable = f"WOL Daily Text ({stamp})\n\n(No 'content' field found)"
