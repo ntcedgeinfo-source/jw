@@ -3,7 +3,7 @@ import base64
 import requests
 
 
-CLOUDFLARE_IMAGE_MODEL = "@cf/lykon/dreamshaper-8-lcm"
+CLOUDFLARE_IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
 
 def generate_image_cloudflare(
