@@ -136,17 +136,32 @@ Daily Text Date:
 Theme Scripture:
 {theme}
 
-Message:
+Original Message:
 {body}
 
-Create a simple Cebuano AI explainer with this format:
+Create a simple Cebuano AI explainer.
+
+Important rules:
+- Do not copy the original paragraph.
+- Do not quote long parts from the message.
+- Explain it using your own words.
+- Keep the meaning faithful to the original.
+- Use simple Cebuano.
+- Make it short, warm, and practical.
+- Do not add new doctrine or ideas outside the message.
+
+Use this format:
 
 AI Explainer:
-1. Pangunang punto:
-2. Unsay makat-onan:
-3. Unsaon pag-apply karon:
 
-Keep it short and clear.
+1. Pangunang punto:
+Write 1 short sentence in your own words.
+
+2. Unsay makat-onan:
+Write 1 short sentence in your own words.
+
+3. Unsaon pag-apply karon:
+Write 1 practical sentence in your own words.
 """
 
     return run_cloudflare_text_ai(prompt)
