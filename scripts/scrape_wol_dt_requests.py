@@ -139,32 +139,44 @@ Theme Scripture:
 Original Message:
 {body}
 
-Make a short Cebuano devotional explainer.
+Create a Cebuano AI explainer for Telegram.
 
-Rules:
-- Use your own words.
-- Do not copy the paragraph.
-- Do not add new doctrine.
-- Keep the thought faithful to the original message.
-- Use simple Cebuano that ordinary readers can understand.
-- Include one simple life illustration.
-- The illustration should help the reader picture the lesson clearly.
+Very important rules:
+- Do not copy the original paragraph.
+- Do not quote long parts from the message.
+- Use your own words only.
+- Keep the meaning faithful to the original message.
+- Do not add new doctrine, new interpretation, or personal opinion.
+- Use simple Cebuano.
+- Keep it warm, clear, and practical.
+- Make it easy for ordinary readers to understand.
+- Use short sentences.
+- Make the illustration realistic and easy to imagine.
+- The illustration should help the reader see the lesson in daily life.
+- Avoid dramatic, fictional, or emotional exaggeration.
 
-Format:
+Use this exact format:
 
 AI Explainer:
 
-Pangunang punto:
-[One short sentence]
+📌 Pangunang Punto:
+[Write 1 short sentence that summarizes the main lesson.]
 
-Makat-onan nato:
-[One short sentence]
+💡 Sayon nga Pasabot:
+[Explain the message in 2 short sentences using your own words.]
 
-Pananglitan:
-[Two to three short sentences that visualize the lesson]
+🖼️ Imahen sa Sitwasyon:
+[Give 2 to 3 short sentences as a simple life illustration.]
+Start with: "Hunahunaa ang..."
 
-Aplikasyon karon:
-[One short practical sentence]
+✅ Aplikasyon Karon:
+[Give 1 practical thing the reader can do today.]
+
+🤔 Pangutana sa Kaugalingon:
+[Write 1 simple reflection question.]
+
+🌱 Mubo nga Hinumdoman:
+[Write 1 short takeaway sentence.]
 """
 
     return run_cloudflare_text_ai(prompt)
