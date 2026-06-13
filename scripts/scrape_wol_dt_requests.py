@@ -394,27 +394,19 @@ Very important rules:
 - Avoid dramatic, fictional, or emotional exaggeration.
 
 Use this exact format:
-
-AI Explainer:
-
 📌 Pangunang Punto:
 [Write 1 short sentence that summarizes the main lesson.]
-
+🌱 Mubo nga Hinumdoman:
+[Write 1 short takeaway sentence.]
 💡 Sayon nga Pasabot:
 [Explain the message in 2 short sentences using your own words.]
-
 🖼️ Imahen sa Sitwasyon:
 [Give 2 to 3 short sentences as a simple life illustration.]
 Start with: "Hunahunaa ang..."
-
 ✅ Aplikasyon Karon:
 [Give 1 practical thing the reader can do today.]
-
 🤔 Pangutana sa Kaugalingon:
 [Write 1 simple reflection question.]
-
-🌱 Mubo nga Hinumdoman:
-[Write 1 short takeaway sentence.]
 """
 
     return run_cloudflare_text_ai(prompt)
