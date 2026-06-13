@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from html import unescape
 from email.message import EmailMessage
+from pathlib import Path
 
 import requests
 
@@ -51,6 +52,14 @@ SEND_TELEGRAM = os.getenv("SEND_TELEGRAM", "1").strip() == "1"
 TELEGRAM_PARSE_MODE = os.getenv("TELEGRAM_PARSE_MODE", "MarkdownV2").strip()
 SEND_MARKDOWN_FILE = os.getenv("SEND_MARKDOWN_FILE", "1").strip() == "1"
 
+# Markdown Agent Memory
+# This lets the script check previous wol_dt_*.md files before writing today's explainer.
+# The previous files are used only as style/format examples, not as a source of doctrine.
+AGENT_MEMORY_ENABLED = os.getenv("AGENT_MEMORY_ENABLED", "1").strip() == "1"
+AGENT_MEMORY_LIMIT = int(os.getenv("AGENT_MEMORY_LIMIT", "3"))
+AGENT_MEMORY_MAX_CHARS = int(os.getenv("AGENT_MEMORY_MAX_CHARS", "6000"))
+AGENT_MEMORY_PATTERN = os.getenv("AGENT_MEMORY_PATTERN", "wol_dt_*.md").strip()
+
 # Email-to-Blogger
 SEND_EMAIL = os.getenv("SEND_EMAIL", "0").strip() == "1"
 BLOGGER_POST_EMAIL = os.getenv("BLOGGER_POST_EMAIL", "").strip()
@@ -61,6 +70,105 @@ SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
 
 os.makedirs(OUT_DIR, exist_ok=True)
+
+
+# -----------------------------
+# Markdown Agent Memory Helpers
+# -----------------------------
+def read_text_file_safe(path: Path, max_chars: int = 4000) -> str:
+    """Read a text file safely and limit the size sent into the AI prompt."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+    if not text:
+        return ""
+
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + "\n...[trimmed]"
+
+    return text
+
+
+def load_previous_markdown_memory(
+    out_dir: str,
+    current_stamp: str,
+    limit: int = AGENT_MEMORY_LIMIT,
+    max_chars: int = AGENT_MEMORY_MAX_CHARS,
+    pattern: str = AGENT_MEMORY_PATTERN,
+) -> str:
+    """
+    Load previous wol_dt_*.md files as lightweight agent memory.
+
+    This works like a simple Hermes-style memory:
+    - check older .md files
+    - use them as tone/format examples
+    - do not copy old content
+    - do not use old files as doctrine/source material
+    """
+    if not AGENT_MEMORY_ENABLED:
+        return ""
+
+    base_dir = Path(out_dir)
+    if not base_dir.exists():
+        return ""
+
+    current_name = f"wol_dt_{current_stamp}.md"
+    files = [
+        p for p in base_dir.glob(pattern)
+        if p.is_file() and p.name != current_name
+    ]
+
+    # File names include ISO dates, so reverse sort usually gives latest first.
+    files = sorted(files, key=lambda p: p.name, reverse=True)[: max(0, limit)]
+
+    if not files:
+        return ""
+
+    per_file_chars = max(800, max_chars // max(1, len(files)))
+    blocks = []
+
+    for path in files:
+        text = read_text_file_safe(path, max_chars=per_file_chars)
+        if not text:
+            continue
+
+        blocks.append(
+            "\n".join(
+                [
+                    f"### Previous Markdown Example: {path.name}",
+                    text,
+                ]
+            )
+        )
+
+    memory = "\n\n---\n\n".join(blocks).strip()
+
+    if len(memory) > max_chars:
+        memory = memory[:max_chars].rstrip() + "\n...[agent memory trimmed]"
+
+    return memory
+
+
+def build_agent_memory_instruction(memory_context: str) -> str:
+    """Build the instruction block added to the AI prompt."""
+    if not memory_context:
+        return ""
+
+    return f"""
+Previous Markdown Memory:
+{memory_context}
+
+How to use the previous Markdown memory:
+- Use it only as a style and formatting guide.
+- Keep the same warm, simple Cebuano tone.
+- Keep the same short Telegram-friendly structure.
+- Do not copy previous explanations.
+- Do not reuse previous illustrations unless the idea naturally fits.
+- Do not use previous files as a doctrinal source.
+- Today's original WOL message is still the only source for today's meaning.
+"""
 
 
 # -----------------------------
@@ -129,10 +237,11 @@ def run_cloudflare_text_ai(prompt: str, model: str = CLOUDFLARE_TEXT_MODEL) -> s
     return explanation.strip()
 
 
-def generate_daily_explainer(parts: dict) -> str:
+def generate_daily_explainer(parts: dict, memory_context: str = "") -> str:
     header = parts.get("header_text", "")
     theme = parts.get("theme_text", "")
     body = parts.get("body_text", "")
+    agent_memory_instruction = build_agent_memory_instruction(memory_context)
 
     prompt = f"""
 Daily Text Date:
@@ -144,6 +253,7 @@ Theme Scripture:
 Original Message:
 {body}
 
+{agent_memory_instruction}
 Create a Cebuano AI explainer for Telegram.
 
 Very important rules:
@@ -621,6 +731,7 @@ def main():
     log_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.log")
     explainer_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}_ai_explainer.txt")
     markdown_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.md")
+    agent_memory_debug_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}_agent_memory.md")
 
     cache = load_cache(cache_path)
 
@@ -743,9 +854,22 @@ def main():
         except Exception as e:
             print(f"Cloudflare image generation failed: {e}")
 
-        # 2. Generate AI explainer
+        # 2. Load previous Markdown files as lightweight agent memory
+        memory_context = load_previous_markdown_memory(
+            out_dir=OUT_DIR,
+            current_stamp=stamp,
+        )
+
+        if memory_context:
+            with open(agent_memory_debug_path, "w", encoding="utf-8") as f:
+                f.write(memory_context + "\n")
+            print("Loaded previous Markdown agent memory:", agent_memory_debug_path)
+        else:
+            print("No previous Markdown agent memory found.")
+
+        # 3. Generate AI explainer using today's content + previous .md style memory
         try:
-            ai_explainer = generate_daily_explainer(parts)
+            ai_explainer = generate_daily_explainer(parts, memory_context=memory_context)
 
             with open(explainer_path, "w", encoding="utf-8") as f:
                 f.write(ai_explainer + "\n")
@@ -756,7 +880,7 @@ def main():
             ai_explainer = "AI explainer failed to generate."
             print(f"Cloudflare AI explainer failed: {e}")
 
-        # 3. Save Markdown copy for future reuse and Telegram document sending
+        # 4. Save Markdown copy for future reuse and Telegram document sending
         try:
             markdown_post = format_markdown_post(
                 parts=parts,
@@ -773,7 +897,7 @@ def main():
         except Exception as e:
             print(f"Markdown post save failed: {e}")
 
-        # 4. Email/Blogger optional
+        # 5. Email/Blogger optional
         if SEND_EMAIL:
             html_post = format_html_post(daily["content"], stamp)
             subject = f"WOL Daily Text ({stamp})"
@@ -811,7 +935,7 @@ def main():
         print("Saved fallback log:", log_path)
         print("Saved fallback Markdown post:", markdown_path)
 
-    # 4. Telegram send
+    # 6. Telegram send
     if SEND_TELEGRAM and TG_TOKEN and TG_CHAT_ID:
         try:
             caption = format_telegram_caption(parts, stamp)
