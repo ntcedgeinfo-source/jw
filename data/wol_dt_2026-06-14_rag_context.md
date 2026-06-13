@@ -1,0 +1,46 @@
+### Retrieved Markdown Memory
+File: wol_dt_2026-06-13.md
+Chunk: 0
+Score: 5
+
+# WOL Daily Text (2026-06-13)
+
+**Date:** Sabado, Hunyo 13
+
+## Theme Scripture
+Ang nagtukod sa tanang butang mao ang Diyos.—Heb 3:4.
+
+## Message
+Samtang magkadaghan ang makat-onan sa imong anak sa eskuwelahan bahin sa science, iyang makita nga ang mga butang sa kalalangan naay gisunod nga mga balaod nga maoy hinungdan sa ilang porma o shape. Pananglitan, ang disenyo sa kada snowflake nagsunod sa geometric pattern nga gitawag ug fractal. Ang fractal nga mga pattern makita pod sa ubang kalalangan. Pero kinsa may nagtakda niini nga mga balaod sa kalalangan? Kinsa may naghimo o nagdisenyo niining nindot nga mga pattern? Kon hunahunaon pag-ayo sa imong anak kini nga mga pangutana, posibleng molig-on ang iyang pagtuo nga gilalang gyod sa Diyos ang tanang butang. Kon modakodako na ang imong anak, puwede nimo siyang pangutan-on, “Kay gilalang man ta sa Diyos, di ba makaingon gyod ta nga naghatag pod siya natog mga balaod o giya aron magmalipayon ta?” Dayon sultihi siya nga kini nga mga giya makita diha sa Bibliya. w24.12 16 ¶8
+
+## AI Explainer
+📌 Pangunang Punto:
+Ang Diyos mao ang nagtukod sa tanang butang, ug ang iyang mga balaod makita sa kalalangan.
+
+🌱 Mubo nga Hinumdoman:
+Ang pagtuo sa D
+
+---
+
+### Retrieved Markdown Memory
+File: wol_dt_2026-06-13.md
+Chunk: 1
+Score: 5
+
+iyos nga nagtukod sa tanang butang makapahimugot sa atong pagtuo.
+
+💡 Sayon nga Pasabot:
+Ang mga butang sa kalalangan nagsunod sa mga balaod nga gitakda sa Diyos. Kini nga mga balaod makita sa mga pattern sa kalalangan, sama sa disenyo sa snowflake.
+
+🖼️ Imahen sa Sitwasyon:
+Hunahunaa ang usa ka bata nga nagtan-aw sa snowflake sa iyang kamot. Siya naghunahuna kon kinsa may nagdisenyo sa ingon ka nindot nga pattern. Dayon, siya nahinumdom nga ang Diyos mao ang nagtukod sa tanang butang.
+
+✅ Aplikasyon Karon:
+Pangutana ang imong anak kon unsa ang iyang nakat-onan sa eskuwelahan bahin sa kalalangan, ug giunsa kini nga nakapahimugot sa iyang pag
+
+---
+Source: https://wol.jw.org/wol/dt/r101/lp-cv/2026/6/13
+
+## Memory Use Rule
+This file may be used by future RAG runs only for tone, format, and Cebuano style.
+It must not be used as doctrine or as the source of meaning for future daily texts.
