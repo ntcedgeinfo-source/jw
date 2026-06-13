@@ -21,7 +21,7 @@ from cloudflare_image import generate_image_cloudflare
 # -----------------------------
 CLOUDFLARE_TEXT_MODEL = os.getenv(
     "CLOUDFLARE_TEXT_MODEL",
-    "@cf/meta/llama-3-8b-instruct"
+    "@cf/meta/llama-4-scout-17b-16e-instruct"
 ).strip()
 
 
