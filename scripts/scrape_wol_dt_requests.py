@@ -48,17 +48,26 @@ TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 SEND_TELEGRAM = os.getenv("SEND_TELEGRAM", "1").strip() == "1"
 
 # Telegram Markdown / .md export
-# Use MarkdownV2 for rendered Telegram messages. Set empty string to send plain text.
 TELEGRAM_PARSE_MODE = os.getenv("TELEGRAM_PARSE_MODE", "MarkdownV2").strip()
 SEND_MARKDOWN_FILE = os.getenv("SEND_MARKDOWN_FILE", "1").strip() == "1"
 
-# Markdown Agent Memory
-# This lets the script check previous wol_dt_*.md files before writing today's explainer.
-# The previous files are used only as style/format examples, not as a source of doctrine.
-AGENT_MEMORY_ENABLED = os.getenv("AGENT_MEMORY_ENABLED", "1").strip() == "1"
-AGENT_MEMORY_LIMIT = int(os.getenv("AGENT_MEMORY_LIMIT", "3"))
-AGENT_MEMORY_MAX_CHARS = int(os.getenv("AGENT_MEMORY_MAX_CHARS", "6000"))
-AGENT_MEMORY_PATTERN = os.getenv("AGENT_MEMORY_PATTERN", "wol_dt_*.md").strip()
+# Local Markdown RAG
+RAG_ENABLED = os.getenv(
+    "RAG_ENABLED",
+    os.getenv("AGENT_MEMORY_ENABLED", "1")
+).strip() == "1"
+
+RAG_PATTERN = os.getenv(
+    "RAG_PATTERN",
+    os.getenv("AGENT_MEMORY_PATTERN", "wol_dt_*.md")
+).strip()
+
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", os.getenv("AGENT_MEMORY_LIMIT", "3")))
+RAG_CHUNK_CHARS = int(os.getenv("RAG_CHUNK_CHARS", "1200"))
+RAG_MAX_CONTEXT_CHARS = int(os.getenv(
+    "RAG_MAX_CONTEXT_CHARS",
+    os.getenv("AGENT_MEMORY_MAX_CHARS", "5000")
+))
 
 # Email-to-Blogger
 SEND_EMAIL = os.getenv("SEND_EMAIL", "0").strip() == "1"
@@ -73,101 +82,214 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 
 # -----------------------------
-# Markdown Agent Memory Helpers
+# Local Markdown RAG Helpers
 # -----------------------------
-def read_text_file_safe(path: Path, max_chars: int = 4000) -> str:
-    """Read a text file safely and limit the size sent into the AI prompt."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore").strip()
-    except Exception:
-        return ""
+def normalize_words(text: str) -> set[str]:
+    text = (text or "").lower()
+    text = re.sub(r"[^\w\s-]", " ", text, flags=re.UNICODE)
 
-    if not text:
-        return ""
-
-    if len(text) > max_chars:
-        return text[:max_chars].rstrip() + "\n...[trimmed]"
-
-    return text
-
-
-def load_previous_markdown_memory(
-    out_dir: str,
-    current_stamp: str,
-    limit: int = AGENT_MEMORY_LIMIT,
-    max_chars: int = AGENT_MEMORY_MAX_CHARS,
-    pattern: str = AGENT_MEMORY_PATTERN,
-) -> str:
-    """
-    Load previous wol_dt_*.md files as lightweight agent memory.
-
-    This works like a simple Hermes-style memory:
-    - check older .md files
-    - use them as tone/format examples
-    - do not copy old content
-    - do not use old files as doctrine/source material
-    """
-    if not AGENT_MEMORY_ENABLED:
-        return ""
-
-    base_dir = Path(out_dir)
-    if not base_dir.exists():
-        return ""
-
-    current_name = f"wol_dt_{current_stamp}.md"
-    files = [
-        p for p in base_dir.glob(pattern)
-        if p.is_file() and p.name != current_name
+    words = [
+        w.strip()
+        for w in text.split()
+        if len(w.strip()) >= 4
     ]
 
-    # File names include ISO dates, so reverse sort usually gives latest first.
-    files = sorted(files, key=lambda p: p.name, reverse=True)[: max(0, limit)]
+    stopwords = {
+        # English
+        "this", "that", "with", "from", "have", "were", "they",
+        "them", "your", "their", "there", "what", "when", "where",
+        "will", "would", "could", "should",
 
-    if not files:
-        return ""
+        # Cebuano / common WOL words
+        "ang", "nga", "mga", "kay", "kini", "kana", "aron",
+        "dili", "unsa", "iyang", "ilang", "ato", "usa", "pag",
+        "siya", "sila", "kita", "kami", "ninyo", "nato",
+        "jehova", "dios", "daily", "text", "explainer",
+    }
 
-    per_file_chars = max(800, max_chars // max(1, len(files)))
-    blocks = []
+    return {w for w in words if w not in stopwords}
 
-    for path in files:
-        text = read_text_file_safe(path, max_chars=per_file_chars)
-        if not text:
+
+def chunk_text(text: str, chunk_chars: int = RAG_CHUNK_CHARS) -> list[str]:
+    text = (text or "").strip()
+
+    if not text:
+        return []
+
+    chunks = []
+    start = 0
+
+    while start < len(text):
+        end = min(start + chunk_chars, len(text))
+        chunk = text[start:end].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        start = end
+
+    return chunks
+
+
+def should_skip_rag_file(path: Path, current_name: str) -> bool:
+    name = path.name
+
+    if name == current_name:
+        return True
+
+    # Avoid retrieving old debug outputs as future memory.
+    skip_suffixes = (
+        "_rag_context.md",
+        "_agent_memory.md",
+    )
+
+    return name.endswith(skip_suffixes)
+
+
+def load_markdown_rag_chunks(
+    out_dir: str,
+    current_stamp: str,
+    pattern: str = RAG_PATTERN,
+) -> list[dict]:
+    if not RAG_ENABLED:
+        return []
+
+    base_dir = Path(out_dir)
+
+    if not base_dir.exists():
+        return []
+
+    current_name = f"wol_dt_{current_stamp}.md"
+
+    files = [
+        p for p in base_dir.glob(pattern)
+        if p.is_file() and not should_skip_rag_file(p, current_name)
+    ]
+
+    chunks = []
+
+    for path in sorted(files, key=lambda p: p.name, reverse=True):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
             continue
 
+        for i, chunk in enumerate(chunk_text(text)):
+            chunks.append({
+                "file": path.name,
+                "chunk_index": i,
+                "text": chunk,
+            })
+
+    return chunks
+
+
+def score_rag_chunk(query_words: set[str], chunk: str) -> int:
+    chunk_words = normalize_words(chunk)
+
+    if not query_words or not chunk_words:
+        return 0
+
+    overlap = query_words.intersection(chunk_words)
+    score = len(overlap)
+
+    useful_markers = [
+        "Pangunang Punto",
+        "Sayon nga Pasabot",
+        "Imahen sa Sitwasyon",
+        "Aplikasyon Karon",
+        "Pangutana sa Kaugalingon",
+        "Mubo nga Hinumdoman",
+        "AI Explainer",
+    ]
+
+    for marker in useful_markers:
+        if marker.lower() in chunk.lower():
+            score += 1
+
+    return score
+
+
+def retrieve_rag_context(
+    parts: dict,
+    out_dir: str,
+    current_stamp: str,
+    top_k: int = RAG_TOP_K,
+    max_context_chars: int = RAG_MAX_CONTEXT_CHARS,
+) -> str:
+    query = " ".join([
+        parts.get("header_text", ""),
+        parts.get("theme_text", ""),
+        parts.get("body_text", ""),
+    ])
+
+    query_words = normalize_words(query)
+    chunks = load_markdown_rag_chunks(out_dir, current_stamp)
+
+    scored = []
+
+    for chunk in chunks:
+        score = score_rag_chunk(query_words, chunk["text"])
+
+        if score > 0:
+            scored.append((score, chunk))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    selected = scored[:top_k]
+
+    # First-run fallback: allow seed memory file like wol_dt_agent_memory.md
+    if not selected:
+        seed_chunks = [
+            chunk for chunk in chunks
+            if "agent_memory" in chunk["file"] or "memory" in chunk["file"]
+        ]
+
+        selected = [
+            (1, chunk)
+            for chunk in seed_chunks[:top_k]
+        ]
+
+    if not selected:
+        return ""
+
+    blocks = []
+
+    for score, chunk in selected:
         blocks.append(
-            "\n".join(
-                [
-                    f"### Previous Markdown Example: {path.name}",
-                    text,
-                ]
-            )
+            "\n".join([
+                "### Retrieved Markdown Memory",
+                f"File: {chunk['file']}",
+                f"Chunk: {chunk['chunk_index']}",
+                f"Score: {score}",
+                "",
+                chunk["text"],
+            ])
         )
 
-    memory = "\n\n---\n\n".join(blocks).strip()
+    context = "\n\n---\n\n".join(blocks).strip()
 
-    if len(memory) > max_chars:
-        memory = memory[:max_chars].rstrip() + "\n...[agent memory trimmed]"
+    if len(context) > max_context_chars:
+        context = context[:max_context_chars].rstrip() + "\n...[RAG context trimmed]"
 
-    return memory
+    return context
 
 
-def build_agent_memory_instruction(memory_context: str) -> str:
-    """Build the instruction block added to the AI prompt."""
-    if not memory_context:
+def build_rag_instruction(rag_context: str) -> str:
+    if not rag_context:
         return ""
 
     return f"""
-Previous Markdown Memory:
-{memory_context}
+Retrieved Markdown Context:
+{rag_context}
 
-How to use the previous Markdown memory:
-- Use it only as a style and formatting guide.
-- Keep the same warm, simple Cebuano tone.
-- Keep the same short Telegram-friendly structure.
+How to use the retrieved context:
+- Use it only for tone, structure, Cebuano style, and Telegram formatting.
 - Do not copy previous explanations.
-- Do not reuse previous illustrations unless the idea naturally fits.
-- Do not use previous files as a doctrinal source.
-- Today's original WOL message is still the only source for today's meaning.
+- Do not reuse previous illustrations unless the idea naturally fits today's text.
+- Do not use previous files as doctrine.
+- Do not add new interpretation from retrieved files.
+- Today's original WOL message is the only source for today's meaning.
 """
 
 
@@ -237,11 +359,11 @@ def run_cloudflare_text_ai(prompt: str, model: str = CLOUDFLARE_TEXT_MODEL) -> s
     return explanation.strip()
 
 
-def generate_daily_explainer(parts: dict, memory_context: str = "") -> str:
+def generate_daily_explainer(parts: dict, rag_context: str = "") -> str:
     header = parts.get("header_text", "")
     theme = parts.get("theme_text", "")
     body = parts.get("body_text", "")
-    agent_memory_instruction = build_agent_memory_instruction(memory_context)
+    rag_instruction = build_rag_instruction(rag_context)
 
     prompt = f"""
 Daily Text Date:
@@ -253,7 +375,8 @@ Theme Scripture:
 Original Message:
 {body}
 
-{agent_memory_instruction}
+{rag_instruction}
+
 Create a Cebuano AI explainer for Telegram.
 
 Very important rules:
@@ -301,23 +424,22 @@ Start with: "Hunahunaa ang..."
 # Telegram Helpers
 # -----------------------------
 def telegram_markdown_v2_escape(text: str) -> str:
-    """Escape text for Telegram MarkdownV2 parse mode."""
     if text is None:
         return ""
 
-    # Telegram MarkdownV2 reserved characters:
-    # _ * [ ] ( ) ~ ` > # + - = | { } . ! and backslash
-    return re.sub(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])", r"\\\1", str(text))
+    return re.sub(
+        r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])",
+        r"\\\1",
+        str(text)
+    )
 
 
 def telegram_trim(text: str, limit: int) -> str:
-    """Trim text safely before sending to Telegram."""
     if len(text) <= limit:
         return text
 
     trimmed = text[: max(0, limit - 1)].rstrip()
 
-    # Avoid ending a MarkdownV2 message with a dangling escape slash.
     if trimmed.endswith("\\"):
         trimmed = trimmed[:-1].rstrip()
 
@@ -325,7 +447,6 @@ def telegram_trim(text: str, limit: int) -> str:
 
 
 def format_telegram_caption(parts: dict, stamp: str) -> str:
-    """Short rendered caption for sendPhoto."""
     header = parts.get("header_text", "")
     theme = parts.get("theme_text", "")
 
@@ -356,7 +477,6 @@ Source: wol.jw.org""".strip()
 
 
 def format_telegram_message(parts: dict, stamp: str, readable: str, ai_explainer: str) -> str:
-    """Telegram-friendly message. MarkdownV2 is escaped to avoid parse errors."""
     if TELEGRAM_PARSE_MODE == "MarkdownV2":
         return "\n".join(
             [
@@ -379,7 +499,13 @@ AI EXPLAINER:
 {ai_explainer}""".strip()
 
 
-def telegram_send_photo(photo_path: str, caption: str, token: str, chat_id: str, parse_mode: str = "") -> None:
+def telegram_send_photo(
+    photo_path: str,
+    caption: str,
+    token: str,
+    chat_id: str,
+    parse_mode: str = "",
+) -> None:
     api = f"https://api.telegram.org/bot{token}/sendPhoto"
 
     if not os.path.exists(photo_path):
@@ -397,9 +523,7 @@ def telegram_send_photo(photo_path: str, caption: str, token: str, chat_id: str,
         resp = requests.post(
             api,
             data=data,
-            files={
-                "photo": f,
-            },
+            files={"photo": f},
             timeout=(15, 120),
         )
 
@@ -408,18 +532,24 @@ def telegram_send_photo(photo_path: str, caption: str, token: str, chat_id: str,
             err = resp.json()
         except Exception:
             err = {"raw": resp.text}
+
         raise RuntimeError(f"Telegram sendPhoto error {resp.status_code}: {err}")
 
 
-def telegram_send_message(text: str, token: str, chat_id: str, parse_mode: str = "") -> None:
+def telegram_send_message(
+    text: str,
+    token: str,
+    chat_id: str,
+    parse_mode: str = "",
+) -> None:
     api = f"https://api.telegram.org/bot{token}/sendMessage"
 
     def chunks(s: str, n: int = 3500):
         start = 0
+
         while start < len(s):
             end = min(start + n, len(s))
 
-            # Avoid splitting right after a MarkdownV2 escape slash.
             if parse_mode == "MarkdownV2":
                 while end > start and s[end - 1] == "\\":
                     end -= 1
@@ -451,12 +581,18 @@ def telegram_send_message(text: str, token: str, chat_id: str, parse_mode: str =
                 err = resp.json()
             except Exception:
                 err = {"raw": resp.text}
+
             raise RuntimeError(f"Telegram error {resp.status_code}: {err}")
 
         time.sleep(0.7)
 
 
-def telegram_send_document(document_path: str, caption: str, token: str, chat_id: str) -> None:
+def telegram_send_document(
+    document_path: str,
+    caption: str,
+    token: str,
+    chat_id: str,
+) -> None:
     api = f"https://api.telegram.org/bot{token}/sendDocument"
 
     if not os.path.exists(document_path):
@@ -469,9 +605,7 @@ def telegram_send_document(document_path: str, caption: str, token: str, chat_id
                 "chat_id": chat_id,
                 "caption": caption[:1024],
             },
-            files={
-                "document": f,
-            },
+            files={"document": f},
             timeout=(15, 120),
         )
 
@@ -480,6 +614,7 @@ def telegram_send_document(document_path: str, caption: str, token: str, chat_id
             err = resp.json()
         except Exception:
             err = {"raw": resp.text}
+
         raise RuntimeError(f"Telegram sendDocument error {resp.status_code}: {err}")
 
 
@@ -495,12 +630,14 @@ class TextExtractor(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style"):
             self._skip = True
+
         if tag in ("p", "div", "header", "h2", "br"):
             self.parts.append("\n")
 
     def handle_endtag(self, tag):
         if tag in ("script", "style"):
             self._skip = False
+
         if tag in ("p", "div", "header", "h2"):
             self.parts.append("\n")
 
@@ -512,10 +649,12 @@ class TextExtractor(HTMLParser):
 def html_to_text(html: str) -> str:
     p = TextExtractor()
     p.feed(html)
+
     text = unescape("".join(p.parts))
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+
     return text.strip()
 
 
@@ -525,6 +664,7 @@ def extract_daily_parts(content_html: str) -> dict:
         content_html,
         flags=re.IGNORECASE | re.DOTALL,
     )
+
     header_text = html_to_text(m.group(0)) if m else ""
 
     m = re.search(
@@ -532,6 +672,7 @@ def extract_daily_parts(content_html: str) -> dict:
         content_html,
         flags=re.IGNORECASE | re.DOTALL,
     )
+
     theme_text = html_to_text(m.group(0)) if m else ""
 
     m = re.search(
@@ -539,6 +680,7 @@ def extract_daily_parts(content_html: str) -> dict:
         content_html,
         flags=re.IGNORECASE | re.DOTALL,
     )
+
     body_text = html_to_text(m.group(1)) if m else ""
     body_text = re.sub(r"\s+", " ", body_text).strip()
 
@@ -567,8 +709,12 @@ def format_human_readable(content_html: str) -> str:
     )
 
 
-def format_markdown_post(parts: dict, stamp: str, ai_explainer: str = "", source_url: str = "") -> str:
-    """Create a reusable .md version of the daily text and AI explainer."""
+def format_markdown_post(
+    parts: dict,
+    stamp: str,
+    ai_explainer: str = "",
+    source_url: str = "",
+) -> str:
     header = parts.get("header_text", "").strip()
     theme = parts.get("theme_text", "").strip()
     body = parts.get("body_text", "").strip()
@@ -599,6 +745,10 @@ def format_markdown_post(parts: dict, stamp: str, ai_explainer: str = "", source
         [
             "---",
             f"Source: {source_url or 'wol.jw.org'}",
+            "",
+            "## Memory Use Rule",
+            "This file may be used by future RAG runs only for tone, format, and Cebuano style.",
+            "It must not be used as doctrine or as the source of meaning for future daily texts.",
         ]
     )
 
@@ -616,6 +766,7 @@ def format_html_post(content_html: str, stamp: str, image_url: str = "") -> str:
         )
 
     image_block = ""
+
     if image_url:
         image_block = (
             f'<p><img src="{esc(image_url)}" alt="Daily Text Image" '
@@ -731,7 +882,7 @@ def main():
     log_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.log")
     explainer_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}_ai_explainer.txt")
     markdown_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.md")
-    agent_memory_debug_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}_agent_memory.md")
+    rag_debug_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}_rag_context.md")
 
     cache = load_cache(cache_path)
 
@@ -774,12 +925,15 @@ def main():
             if resp.status_code == 304:
                 if os.path.exists(raw_path):
                     print("304 Not Modified - using existing JSON:", raw_path)
+
                     with open(raw_path, "r", encoding="utf-8") as f:
                         payload = json.load(f)
+
                     resp_headers = {
                         "ETag": etag,
                         "Last-Modified": last_modified,
                     }
+
                     break
 
                 headers.pop("If-None-Match", None)
@@ -854,22 +1008,27 @@ def main():
         except Exception as e:
             print(f"Cloudflare image generation failed: {e}")
 
-        # 2. Load previous Markdown files as lightweight agent memory
-        memory_context = load_previous_markdown_memory(
+        # 2. Retrieve relevant Markdown context using local RAG
+        rag_context = retrieve_rag_context(
+            parts=parts,
             out_dir=OUT_DIR,
             current_stamp=stamp,
         )
 
-        if memory_context:
-            with open(agent_memory_debug_path, "w", encoding="utf-8") as f:
-                f.write(memory_context + "\n")
-            print("Loaded previous Markdown agent memory:", agent_memory_debug_path)
-        else:
-            print("No previous Markdown agent memory found.")
+        if rag_context:
+            with open(rag_debug_path, "w", encoding="utf-8") as f:
+                f.write(rag_context + "\n")
 
-        # 3. Generate AI explainer using today's content + previous .md style memory
+            print("Loaded RAG Markdown context:", rag_debug_path)
+        else:
+            print("No RAG Markdown context found.")
+
+        # 3. Generate AI explainer using today's content + RAG context
         try:
-            ai_explainer = generate_daily_explainer(parts, memory_context=memory_context)
+            ai_explainer = generate_daily_explainer(
+                parts,
+                rag_context=rag_context,
+            )
 
             with open(explainer_path, "w", encoding="utf-8") as f:
                 f.write(ai_explainer + "\n")
@@ -880,7 +1039,7 @@ def main():
             ai_explainer = "AI explainer failed to generate."
             print(f"Cloudflare AI explainer failed: {e}")
 
-        # 4. Save Markdown copy for future reuse and Telegram document sending
+        # 4. Save Markdown copy for future RAG + Telegram document
         try:
             markdown_post = format_markdown_post(
                 parts=parts,
@@ -939,7 +1098,12 @@ def main():
     if SEND_TELEGRAM and TG_TOKEN and TG_CHAT_ID:
         try:
             caption = format_telegram_caption(parts, stamp)
-            telegram_text = format_telegram_message(parts, stamp, readable, ai_explainer)
+            telegram_text = format_telegram_message(
+                parts,
+                stamp,
+                readable,
+                ai_explainer,
+            )
             parse_mode = TELEGRAM_PARSE_MODE if TELEGRAM_PARSE_MODE else ""
 
             if os.path.exists(image_path):
