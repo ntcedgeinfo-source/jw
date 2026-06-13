@@ -46,6 +46,11 @@ TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 SEND_TELEGRAM = os.getenv("SEND_TELEGRAM", "1").strip() == "1"
 
+# Telegram Markdown / .md export
+# Use MarkdownV2 for rendered Telegram messages. Set empty string to send plain text.
+TELEGRAM_PARSE_MODE = os.getenv("TELEGRAM_PARSE_MODE", "MarkdownV2").strip()
+SEND_MARKDOWN_FILE = os.getenv("SEND_MARKDOWN_FILE", "1").strip() == "1"
+
 # Email-to-Blogger
 SEND_EMAIL = os.getenv("SEND_EMAIL", "0").strip() == "1"
 BLOGGER_POST_EMAIL = os.getenv("BLOGGER_POST_EMAIL", "").strip()
@@ -185,19 +190,103 @@ Start with: "Hunahunaa ang..."
 # -----------------------------
 # Telegram Helpers
 # -----------------------------
-def telegram_send_photo(photo_path: str, caption: str, token: str, chat_id: str) -> None:
+def telegram_markdown_v2_escape(text: str) -> str:
+    """Escape text for Telegram MarkdownV2 parse mode."""
+    if text is None:
+        return ""
+
+    # Telegram MarkdownV2 reserved characters:
+    # _ * [ ] ( ) ~ ` > # + - = | { } . ! and backslash
+    return re.sub(r"([_\*\[\]\(\)~`>#+\-=|{}.!\\])", r"\\\1", str(text))
+
+
+def telegram_trim(text: str, limit: int) -> str:
+    """Trim text safely before sending to Telegram."""
+    if len(text) <= limit:
+        return text
+
+    trimmed = text[: max(0, limit - 1)].rstrip()
+
+    # Avoid ending a MarkdownV2 message with a dangling escape slash.
+    if trimmed.endswith("\\"):
+        trimmed = trimmed[:-1].rstrip()
+
+    return trimmed + "…"
+
+
+def format_telegram_caption(parts: dict, stamp: str) -> str:
+    """Short rendered caption for sendPhoto."""
+    header = parts.get("header_text", "")
+    theme = parts.get("theme_text", "")
+
+    if TELEGRAM_PARSE_MODE == "MarkdownV2":
+        caption = "\n".join(
+            [
+                f"*{telegram_markdown_v2_escape(f'WOL Daily Text ({stamp})')}*",
+                "",
+                telegram_markdown_v2_escape(header),
+                "",
+                f"*{telegram_markdown_v2_escape('Theme Scripture:')}*",
+                telegram_markdown_v2_escape(theme),
+                "",
+                telegram_markdown_v2_escape("Source: wol.jw.org"),
+            ]
+        ).strip()
+    else:
+        caption = f"""WOL Daily Text ({stamp})
+
+{header}
+
+Theme Scripture:
+{theme}
+
+Source: wol.jw.org""".strip()
+
+    return telegram_trim(caption, 1024)
+
+
+def format_telegram_message(parts: dict, stamp: str, readable: str, ai_explainer: str) -> str:
+    """Telegram-friendly message. MarkdownV2 is escaped to avoid parse errors."""
+    if TELEGRAM_PARSE_MODE == "MarkdownV2":
+        return "\n".join(
+            [
+                f"*{telegram_markdown_v2_escape(f'WOL Daily Text ({stamp})')}*",
+                "",
+                f"*{telegram_markdown_v2_escape('Daily Text:')}*",
+                telegram_markdown_v2_escape(readable),
+                "",
+                f"*{telegram_markdown_v2_escape('AI Explainer:')}*",
+                telegram_markdown_v2_escape(ai_explainer or "AI explainer not available."),
+            ]
+        ).strip()
+
+    return f"""WOL Daily Text ({stamp})
+
+{readable}
+
+AI EXPLAINER:
+
+{ai_explainer}""".strip()
+
+
+def telegram_send_photo(photo_path: str, caption: str, token: str, chat_id: str, parse_mode: str = "") -> None:
     api = f"https://api.telegram.org/bot{token}/sendPhoto"
 
     if not os.path.exists(photo_path):
         raise FileNotFoundError(f"Photo not found: {photo_path}")
 
+    data = {
+        "chat_id": chat_id,
+        "caption": caption[:1024],
+    }
+
+    if parse_mode:
+        data["parse_mode"] = parse_mode
+
     with open(photo_path, "rb") as f:
         resp = requests.post(
             api,
-            data={
-                "chat_id": chat_id,
-                "caption": caption[:1024],
-            },
+            data=data,
             files={
                 "photo": f,
             },
@@ -212,21 +301,38 @@ def telegram_send_photo(photo_path: str, caption: str, token: str, chat_id: str)
         raise RuntimeError(f"Telegram sendPhoto error {resp.status_code}: {err}")
 
 
-def telegram_send_message(text: str, token: str, chat_id: str) -> None:
+def telegram_send_message(text: str, token: str, chat_id: str, parse_mode: str = "") -> None:
     api = f"https://api.telegram.org/bot{token}/sendMessage"
 
     def chunks(s: str, n: int = 3500):
-        for i in range(0, len(s), n):
-            yield s[i:i + n]
+        start = 0
+        while start < len(s):
+            end = min(start + n, len(s))
+
+            # Avoid splitting right after a MarkdownV2 escape slash.
+            if parse_mode == "MarkdownV2":
+                while end > start and s[end - 1] == "\\":
+                    end -= 1
+
+            if end == start:
+                end = min(start + n, len(s))
+
+            yield s[start:end]
+            start = end
 
     for part in chunks(text):
+        data = {
+            "chat_id": chat_id,
+            "text": part,
+            "disable_web_page_preview": True,
+        }
+
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+
         resp = requests.post(
             api,
-            data={
-                "chat_id": chat_id,
-                "text": part,
-                "disable_web_page_preview": True,
-            },
+            data=data,
             timeout=(15, 60),
         )
 
@@ -238,6 +344,33 @@ def telegram_send_message(text: str, token: str, chat_id: str) -> None:
             raise RuntimeError(f"Telegram error {resp.status_code}: {err}")
 
         time.sleep(0.7)
+
+
+def telegram_send_document(document_path: str, caption: str, token: str, chat_id: str) -> None:
+    api = f"https://api.telegram.org/bot{token}/sendDocument"
+
+    if not os.path.exists(document_path):
+        raise FileNotFoundError(f"Document not found: {document_path}")
+
+    with open(document_path, "rb") as f:
+        resp = requests.post(
+            api,
+            data={
+                "chat_id": chat_id,
+                "caption": caption[:1024],
+            },
+            files={
+                "document": f,
+            },
+            timeout=(15, 120),
+        )
+
+    if resp.status_code >= 400:
+        try:
+            err = resp.json()
+        except Exception:
+            err = {"raw": resp.text}
+        raise RuntimeError(f"Telegram sendDocument error {resp.status_code}: {err}")
 
 
 # -----------------------------
@@ -322,6 +455,44 @@ def format_human_readable(content_html: str) -> str:
             "=" * 60,
         ]
     )
+
+
+def format_markdown_post(parts: dict, stamp: str, ai_explainer: str = "", source_url: str = "") -> str:
+    """Create a reusable .md version of the daily text and AI explainer."""
+    header = parts.get("header_text", "").strip()
+    theme = parts.get("theme_text", "").strip()
+    body = parts.get("body_text", "").strip()
+
+    lines = [
+        f"# WOL Daily Text ({stamp})",
+        "",
+        f"**Date:** {header or stamp}",
+        "",
+        "## Theme Scripture",
+        theme or "_No theme scripture found._",
+        "",
+        "## Message",
+        body or "_No message found._",
+        "",
+    ]
+
+    if ai_explainer:
+        lines.extend(
+            [
+                "## AI Explainer",
+                ai_explainer.strip(),
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "---",
+            f"Source: {source_url or 'wol.jw.org'}",
+        ]
+    )
+
+    return "\n".join(lines).strip() + "\n"
 
 
 def format_html_post(content_html: str, stamp: str, image_url: str = "") -> str:
@@ -449,6 +620,7 @@ def main():
     cache_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.cache.json")
     log_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.log")
     explainer_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}_ai_explainer.txt")
+    markdown_path = os.path.join(OUT_DIR, f"wol_dt_{stamp}.md")
 
     cache = load_cache(cache_path)
 
@@ -584,7 +756,24 @@ def main():
             ai_explainer = "AI explainer failed to generate."
             print(f"Cloudflare AI explainer failed: {e}")
 
-        # 3. Email/Blogger optional
+        # 3. Save Markdown copy for future reuse and Telegram document sending
+        try:
+            markdown_post = format_markdown_post(
+                parts=parts,
+                stamp=stamp,
+                ai_explainer=ai_explainer,
+                source_url=url,
+            )
+
+            with open(markdown_path, "w", encoding="utf-8") as f:
+                f.write(markdown_post)
+
+            print("Saved Markdown post:", markdown_path)
+
+        except Exception as e:
+            print(f"Markdown post save failed: {e}")
+
+        # 4. Email/Blogger optional
         if SEND_EMAIL:
             html_post = format_html_post(daily["content"], stamp)
             subject = f"WOL Daily Text ({stamp})"
@@ -609,29 +798,25 @@ def main():
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(readable + "\n")
 
+        markdown_post = format_markdown_post(
+            parts=parts,
+            stamp=stamp,
+            ai_explainer="",
+            source_url=url,
+        )
+
+        with open(markdown_path, "w", encoding="utf-8") as f:
+            f.write(markdown_post)
+
         print("Saved fallback log:", log_path)
+        print("Saved fallback Markdown post:", markdown_path)
 
     # 4. Telegram send
     if SEND_TELEGRAM and TG_TOKEN and TG_CHAT_ID:
         try:
-            caption = f"""WOL Daily Text ({stamp})
-
-{parts.get("header_text", "")}
-
-Theme Scripture:
-{parts.get("theme_text", "")}
-
-Source: wol.jw.org
-""".strip()
-
-            telegram_text = f"""WOL Daily Text ({stamp})
-
-{readable}
-
-AI EXPLAINER:
-
-{ai_explainer}
-""".strip()
+            caption = format_telegram_caption(parts, stamp)
+            telegram_text = format_telegram_message(parts, stamp, readable, ai_explainer)
+            parse_mode = TELEGRAM_PARSE_MODE if TELEGRAM_PARSE_MODE else ""
 
             if os.path.exists(image_path):
                 telegram_send_photo(
@@ -639,24 +824,37 @@ AI EXPLAINER:
                     caption=caption,
                     token=TG_TOKEN,
                     chat_id=TG_CHAT_ID,
+                    parse_mode=parse_mode,
                 )
 
                 telegram_send_message(
                     telegram_text,
                     TG_TOKEN,
                     TG_CHAT_ID,
+                    parse_mode=parse_mode,
                 )
 
-                print("Sent image, daily text, and AI explainer to Telegram.")
+                print("Sent image, Markdown-formatted daily text, and AI explainer to Telegram.")
 
             else:
                 telegram_send_message(
                     telegram_text,
                     TG_TOKEN,
                     TG_CHAT_ID,
+                    parse_mode=parse_mode,
                 )
 
-                print("Sent daily text and AI explainer to Telegram.")
+                print("Sent Markdown-formatted daily text and AI explainer to Telegram.")
+
+            if SEND_MARKDOWN_FILE and os.path.exists(markdown_path):
+                telegram_send_document(
+                    document_path=markdown_path,
+                    caption=f"WOL Daily Text Markdown ({stamp})",
+                    token=TG_TOKEN,
+                    chat_id=TG_CHAT_ID,
+                )
+
+                print("Sent Markdown .md file to Telegram.")
 
         except Exception as e:
             print(f"Telegram send failed: {e}")
